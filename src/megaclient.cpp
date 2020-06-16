@@ -2673,10 +2673,11 @@ void MegaClient::exec()
                             // updated to reduce CPU load
                             bool repeatsyncup = false;
                             bool syncupdone = false;
+
                             for (it = syncs.begin(); it != syncs.end(); it++)
                             {
                                 if (((*it)->state == SYNC_ACTIVE || (*it)->state == SYNC_INITIALSCAN)
-                                 && !syncadding && syncuprequired && !syncnagleretry)
+                                    && !syncadding && syncuprequired && !syncnagleretry)
                                 {
                                     LOG_debug << "Running syncup on demand";
                                     repeatsyncup |= !syncup((*it)->localroot.get(), &nds);
@@ -12564,7 +12565,6 @@ bool MegaClient::syncdown(LocalNode* l, string* localpath, bool rubbish)
             l->isFilterDownloading(false);
             l->loadFilters();
             l->applyFilters();
-            l->scan(true);
         }
         else
         {
@@ -12915,7 +12915,7 @@ bool MegaClient::syncdown(LocalNode* l, string* localpath, bool rubbish)
 // if attached to an existing node
 // l and n are assumed to be folders and existing on both sides or scheduled
 // for creation
-bool MegaClient::syncup(LocalNode* l, dstime* nds)
+bool MegaClient::syncup(LocalNode* l, dstime* nds, size_t& parentPending)
 {
     bool insync = true;
 
@@ -12928,6 +12928,9 @@ bool MegaClient::syncup(LocalNode* l, dstime* nds)
 
     // UTF-8 converted local name
     string localname;
+
+    // Number of pending nodes.
+    size_t numPending = 0;
 
     if (l->node)
     {
@@ -12996,13 +12999,14 @@ bool MegaClient::syncup(LocalNode* l, dstime* nds)
             l->isFilterDownloading(false);
             l->loadFilters();
             l->applyFilters();
-            l->scan(true);
         }
         else
         {
             LOG_verbose << "Skipping syncup of "
                         << l->name 
                         << " as filter is downloading.";
+
+            return ++parentPending;
         }
 
         // queue further syncup.
@@ -13015,9 +13019,9 @@ bool MegaClient::syncup(LocalNode* l, dstime* nds)
     {
         LocalNode* ll = lit->second;
 
-        if (ll->isPruned())
+        if (ll->isIgnored())
         {
-            LOG_verbose << "Skipping syncup of pruned file " << ll->name;
+            LOG_verbose << "Skipping syncup of ignored node " << ll->name;
             continue;
         }
 
@@ -13238,10 +13242,12 @@ bool MegaClient::syncup(LocalNode* l, dstime* nds)
                     }
 
                     // recurse into directories of equal name
-                    if (!syncup(ll, nds))
+                    if (!syncup(ll, nds, numPending))
                     {
+                        parentPending += numPending;
                         return false;
                     }
+
                     continue;
                 }
             }
@@ -13432,38 +13438,58 @@ bool MegaClient::syncup(LocalNode* l, dstime* nds)
                 LOG_err << "LocalNode created and reported " << ll->name;
             }
         }
-        else
+        else if (ll->parent->node)
         {
             ll->created = true;
 
             assert (!isSymLink);
+
             // create remote folder or send file
             LOG_debug << "Adding local file to synccreate: " << ll->name << " " << synccreate.size();
+
             synccreate.push_back(ll);
             syncactivity = true;
 
             if (synccreate.size() >= MAX_NEWNODES)
             {
                 LOG_warn << "Stopping syncup due to MAX_NEWNODES";
+                parentPending += numPending;
                 return false;
             }
+        }
+        else
+        {
+            LOG_debug << "Skipping syncup of "
+                      << ll->name
+                      << " as parent doesn't exist.";
+            ++numPending;
         }
 
         if (ll->type == FOLDERNODE)
         {
-            if (!syncup(ll, nds))
+            if (!syncup(ll, nds, numPending))
             {
+                parentPending += numPending;
                 return false;
             }
         }
     }
 
-    if (insync && l->node)
+    if (insync && l->node && numPending == 0)
     {
         l->treestate(TREESTATE_SYNCED);
     }
 
+    parentPending += numPending;
     return true;
+}
+
+bool MegaClient::syncup(LocalNode* l, dstime* nds)
+{
+    size_t numPending = 0;
+
+    return syncup(l, nds, numPending)
+           && numPending == 0;
 }
 
 // execute updates stored in synccreate[]

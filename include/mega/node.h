@@ -390,8 +390,7 @@ struct MEGA_API LocalNode : public File
     ~LocalNode();
 
     // recursively update child filter state.
-    // returns true if any nodes have become unignored.
-    bool applyFilters();
+    void applyFilters();
 
     // unconditionally clears all filters.
     void clearAllFilters();
@@ -402,21 +401,17 @@ struct MEGA_API LocalNode : public File
     // specify whether we should clear our parent's filters when we are deleted.
     void clearParentFilterOnDeletion(const bool clear);
 
+    // signal that this node's filter is downloading.
+    void filterDownloading();
+
+    // returns true if this node has pending filter ops.
+    bool hasPendingOps() const;
+
     // true if this node is pending or syncing.
     bool isBusy() const;
 
     // true if name should be ignored.
     bool isExcluded(const string& name) const;
-
-    // specify whether this node's filter is downloading.
-    void isFilterDownloading(const bool downloading);
-
-    // true if this node's filter is downloading.
-    bool isFilterDownloading() const;
-
-    // true if this node's filter is still downloading.
-    bool isFilterStillDownloading(const remotenode_map& children) const;
-    bool isFilterStillDownloading() const;
 
     // true if name should not be ignored.
     bool isIncluded(const string& name) const;
@@ -433,6 +428,9 @@ struct MEGA_API LocalNode : public File
     // conditionally loads this node's filters.
     void loadFilters();
 
+    // performs pending filter operations.
+    bool performPendingOps();
+
 private:
     // filter flags.
     struct
@@ -446,12 +444,9 @@ private:
         // true if this node is ignored.
         bool mIgnored : 1;
 
-        // true if some parent of ours is downloading their filter.
-        bool mParentFilterDownloading : 1;
+        // true if some parent of ours has pending filter ops.
+        bool mParentHasPendingFilterOps : 1;
     };
-
-    // unconditionally clears this node's filters.
-    void doClearFilters();
 
     // unconditionally loads this node's filters.
     void doLoadFilters();
@@ -459,8 +454,11 @@ private:
     // true if this node contains an ignore file.
     bool hasIgnoreFile() const;
 
-    // regenerates mIgnored and mParentFilterDownloading based on parent.
-    // executes deferred filter operations.
+    // true if this node's filter is still downloading.
+    bool isFilterDownloading() const;
+
+    // recomputes mIgnored and mParentHasPendingFilterOps.
+    // executes deferred operations if able.
     void recomputeFilterFlags();
 
     FilterChain mFilters;

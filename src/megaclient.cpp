@@ -3839,9 +3839,11 @@ void MegaClient::applyFilters()
 
     for (Sync* sync : syncs)
     {
-        syncdownrequired |= sync->localroot->applyFilters();
-        syncuprequired |= syncdownrequired;
+        sync->localroot->applyFilters();
     }
+
+    syncdownrequired = true;
+    syncuprequired = true;
 }
 
 void MegaClient::clearFilters()
@@ -12551,26 +12553,22 @@ bool MegaClient::syncdown(LocalNode* l, string* localpath, bool rubbish)
         }
     }
 
-    // was this node's filter being downloaded?
-    if (l->isFilterDownloading())
+    // does this node have pending filter ops?
+    if (l->hasPendingOps())
     {
-        // is it still downloading?
-        if (!l->isFilterStillDownloading(nchildren))
+        // try and perform the pending ops.
+        if (!l->performPendingOps())
         {
-            // apply newly downloaded filter.
-            l->isFilterDownloading(false);
-            l->loadFilters();
-            l->applyFilters();
-        }
-        else
-        {
+            // bail if we couldn't perform the operations.
             LOG_verbose << "Skipping syncdown of "
                         << l->name
-                        << " as filter is downloading.";
+                        << " as it has pending filter operations.";
 
-            // remote changes will be pulled in future syncdown.
             return true;
         }
+
+        // apply new filtering rules.
+        l->applyFilters();
     }
 
     // filter out excluded nodes.
@@ -12655,9 +12653,10 @@ bool MegaClient::syncdown(LocalNode* l, string* localpath, bool rubbish)
             {
                 if (ll->node != rit->second)
                 {
-                    ll->setnode(rit->second);
                     ll->sync->statecacheadd(ll);
                 }
+
+                ll->setnode(rit->second);
 
                 if (*ll == *(FileFingerprint*)rit->second)
                 {
@@ -12896,7 +12895,7 @@ bool MegaClient::syncdown(LocalNode* l, string* localpath, bool rubbish)
                         // i.e. don't do anything else until the filters are stable.
                         if (isIgnoreFile(*rit.second))
                         {
-                            l->isFilterDownloading(true);
+                            l->filterDownloading();
                             break;
                         }
                     }
@@ -13034,25 +13033,22 @@ bool MegaClient::syncup(LocalNode* l, dstime* nds, size_t& parentPending)
         }
     }
 
-    // was this node's filter downloading?
-    if (l->isFilterDownloading())
+    // does this node have pending filter ops?
+    if (l->hasPendingOps())
     {
-        // is the filter still downloading?
-        if (!l->isFilterStillDownloading(nchildren))
+        // try and perform the pending ops.
+        if (!l->performPendingOps())
         {
-            // apply newly downloaded filter.
-            l->isFilterDownloading(false);
-            l->loadFilters();
-            l->applyFilters();
-        }
-        else
-        {
+            // bail if we couldn't perform the operations.
             LOG_verbose << "Skipping syncup of "
-                        << l->name 
-                        << " as filter is downloading.";
+                        << l->name
+                        << " as it has pending filter operations.";
 
             return ++parentPending;
         }
+
+        // apply new filtering rules.
+        l->applyFilters();
     }
 
     // check for elements that need to be created, deleted or updated on the
@@ -13125,9 +13121,9 @@ bool MegaClient::syncup(LocalNode* l, dstime* nds, size_t& parentPending)
                 {
                     if (ll->node != rit->second)
                     {
-                        ll->setnode(rit->second);
                         ll->sync->statecacheadd(ll);
                     }
+                    ll->setnode(rit->second);
 
                     // check if file is likely to be identical
                     if (*ll == *(FileFingerprint*)rit->second)

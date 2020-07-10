@@ -34,6 +34,7 @@
 namespace mega {
 
 const string Sync::IGNORE_FILENAME = ".megaignore";
+const int Sync::IGNORE_FILE_DELAY_DS = 30;
 const int Sync::SCANNING_DELAY_DS = 5;
 const int Sync::EXTRA_SCANNING_DELAY_DS = 150;
 const int Sync::FILE_UPDATE_DELAY_DS = 30;
@@ -1331,10 +1332,45 @@ LocalNode* Sync::checkpath(LocalNode* l, string* localpath, string* localname, d
     LOG_verbose << "Scanning: " << path << " in=" << initializing << " full=" << fullscan << " l=" << l;
 
     // postpone moving nodes into nonexistent parents
-    if (parent && !parent->isIgnored() && !parent->node)
+    if (parent && !parent->isIgnored())
     {
-        LOG_warn << "Parent doesn't exist yet: " << path;
-        return (LocalNode*)~0;
+        // postpone moving nodes into existing parents.
+        if (!parent->node)
+        {
+            LOG_warn << "Parent doesn't exist yet: " << path;
+            return (LocalNode*)~0;
+        }
+
+        // called via procscanq(...).
+        if (backoffds)
+        {
+            // assume filter ops require us to defer this subtree.
+            *backoffds = IGNORE_FILE_DELAY_DS;
+
+            // some parent of ours has a pending filter load.
+            if (parent->hasParentWithPendingOps())
+            {
+                // retry later.
+                return nullptr;
+            }
+
+            // our parent has a pending filter laod.
+            if (parent->hasPendingOps())
+            {
+                // try and perform the load.
+                if (parent->performPendingOps() < 0)
+                {
+                    // can't load, retry later.
+                    return nullptr;
+                }
+
+                // loaded okay, update child filter state.
+                parent->applyFilters();
+            }
+
+            // no retry necessary.
+            *backoffds = 0;
+        }
     }
 
     // attempt to open/type this file
@@ -1824,6 +1860,7 @@ LocalNode* Sync::checkpath(LocalNode* l, string* localpath, string* localname, d
 
         if (changed || newnode)
         {
+            // dgw: TODO: changed only.
             if (isIgnoreFile(*l))
             {
                 assert(l->parent);

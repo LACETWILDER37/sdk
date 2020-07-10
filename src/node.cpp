@@ -1433,11 +1433,12 @@ void LocalNode::setnameparent(LocalNode* newparent, string* newlocalpath, std::u
 
         if (wasIgnoreFile)
         {
+            parent->clearFilters();
+
             // ignore file is being destroyed.
             if (mClearParentFilterOnDeletion)
             {
                 assert(parent);
-                parent->clearFilters();
                 parent->applyFilters();
             }
         }
@@ -1494,6 +1495,7 @@ void LocalNode::init(Sync* csync, nodetype_t ctype, LocalNode* cparent, string* 
     bumpnagleds();
 
     mClearParentFilterOnDeletion = true;
+    mFilterFailureIt = sync->client->syncfilterfailures.end();
     mFilterDownloading = false;
     mIgnored = false;
     mParentHasPendingFilterOps = false;
@@ -1753,7 +1755,7 @@ LocalNode::~LocalNode()
     {
         // move associated node into debris unless the sync is shutting down
         // or we're being ignored.
-        if (isIgnored() || sync->state < SYNC_INITIALSCAN)
+        if (sync->state < SYNC_INITIALSCAN)
         {
             node->localnode = NULL;
         }
@@ -1781,7 +1783,7 @@ void LocalNode::getlocalpath(string* path, bool sdisable, const std::string* loc
 
     while (l)
     {
-        assert(!l->parent || l->parent->sync == sync);
+        //assert(!l->parent || l->parent->sync == sync);
 
         // use short name, if available (less likely to overflow MAXPATH,
         // perhaps faster?) and sdisable not set.  Use localname from the sync root though, as it has the absolute path.
@@ -2017,30 +2019,18 @@ void LocalNode::applyFilters()
     {
         LocalNode& child = *pending.front();
 
-        // were we ignored?
-        const bool wasIgnored = child.mIgnored;
-        
         // recompute child filter state.
         // perform deferred operations if any.
         child.recomputeFilterFlags();
 
         // have we become ignored?
-        if (!wasIgnored && child.mIgnored)
+        if (child.mIgnored && node)
         {
-            // do we have a remote?
-            if (child.node)
-            {
-                // needed so that the node is recreated.
-                child.created = false;
+            // don't move/rename in the cloud.
+            child.detachRemote();
 
-                // detach remote so that moves aren't recorded.
-                child.node->localnode = nullptr;
-                child.node->tag = child.sync->tag;
-                child.node = nullptr;
-
-                // update cache.
-                sync->statecacheadd(&child);
-            }
+            // needed so that the node is recreated.
+            child.created = false;
         }
 
         // push this subtree's children in reverse order.
@@ -2076,11 +2066,10 @@ void LocalNode::clearAllFilters()
         LocalNode& node = *pending.front();
 
         // purge filters.
-        node.mFilters.clear();
+        node.clearFilters();
 
         // clear directory filter state.
-        node.mFilterDownloading = false;
-        node.mPendingFilterOp = nullptr;
+        node.mClearParentFilterOnDeletion = false;
 
         // process children.
         // queue subdirectories.
@@ -2107,11 +2096,16 @@ void LocalNode::clearAllFilters()
 
 void LocalNode::clearFilters()
 {
-    if (!mParentHasPendingFilterOps)
-    {
-        mFilters.clear();
+    mFilterDownloading = false;
+    mFilters.clear();
+    mPendingFilterOp = nullptr;
 
-        mPendingFilterOp = nullptr;
+    auto& filterFailures = sync->client->syncfilterfailures;
+
+    if (mFilterFailureIt != filterFailures.end())
+    {
+        filterFailures.erase(mFilterFailureIt);
+        mFilterFailureIt = filterFailures.end();
     }
 }
 
@@ -2120,24 +2114,55 @@ void LocalNode::clearParentFilterOnDeletion(const bool clear)
     mClearParentFilterOnDeletion = clear;
 }
 
+void LocalNode::detachRemote()
+{
+    if (node)
+    {
+        node->localnode = nullptr;
+        node->tag = sync->tag;
+        node = nullptr;
+
+        sync->statecacheadd(this);
+    }
+}
+
 void LocalNode::filterDownloading()
 {
     // Remember we were waiting for a filter download.
     mFilterDownloading = true;
 
+    // Have we already got a pending load?
     if (!mPendingFilterOp)
     {
         // Queue filter load.
-        mPendingFilterOp = &LocalNode::doLoadFilters;
+        mPendingFilterOp = &LocalNode::loadFiltersOp;
 
         // Update child pending state.
         applyFilters();
     }
 }
 
+bool LocalNode::hasParentWithPendingOps() const
+{
+    return mParentHasPendingFilterOps;
+}
+
 bool LocalNode::hasPendingOps() const
 {
     return mPendingFilterOp != nullptr;
+}
+
+string LocalNode::ignoreFilePath() const
+{
+    assert(type == FOLDERNODE);
+
+    string path;
+
+    getlocalpath(&path);
+    path.append(sync->client->fsaccess->localseparator);
+    path.append(Sync::IGNORE_FILENAME);
+
+    return path;
 }
 
 bool LocalNode::isBusy() const
@@ -2248,20 +2273,22 @@ void LocalNode::loadAllFilters()
     localnode_list pending;
 
     // general filter state.
+    mClearParentFilterOnDeletion = true;
     mIgnored = false;
     mParentHasPendingFilterOps = false;
+    mPendingFilterOp = nullptr;
 
     // directory filter state.
     if (hasIgnoreFile())
     {
         mFilterDownloading = isFilterDownloading();
-        mPendingFilterOp = &LocalNode::doLoadFilters;
+        mPendingFilterOp = &LocalNode::loadFiltersOp;
   
         // load filters.
         if (!mFilterDownloading)
         {
             // will clear pending op if successful.
-            doLoadFilters();
+            loadFiltersOp();
         }
     }
 
@@ -2271,8 +2298,10 @@ void LocalNode::loadAllFilters()
         LocalNode& child = *child_it.second;
 
         // general filter state.
+        child.mClearParentFilterOnDeletion = true;
         child.mIgnored = isExcluded(child.name);
         child.mParentHasPendingFilterOps = mPendingFilterOp;
+        child.mPendingFilterOp = nullptr;
 
         // queue subdirectories.
         if (child.type == FOLDERNODE)
@@ -2303,9 +2332,11 @@ void LocalNode::loadAllFilters()
             LocalNode& child = *child_it.second;
 
             // general filter state.
+            child.mClearParentFilterOnDeletion = true;
             child.mIgnored = node.isExcluded(child.name);
             child.mParentHasPendingFilterOps =
               node.mParentHasPendingFilterOps || node.mPendingFilterOp;
+            child.mPendingFilterOp = nullptr;
 
             // queue subdirectory.
             if (child.type == FOLDERNODE)
@@ -2319,38 +2350,28 @@ void LocalNode::loadAllFilters()
     }
 }
 
-void LocalNode::loadFilters(string& rootPath)
+bool LocalNode::loadFilters(string filePath)
 {
-    assert(type == FOLDERNODE);
-
-    const size_t size = rootPath.size();
-
-    rootPath.append(sync->client->fsaccess->localseparator);
-    rootPath.append(Sync::IGNORE_FILENAME);
-
+    // alias for convenience.
+    auto& filterFailures = sync->client->syncfilterfailures;
     auto fileAccess = sync->client->fsaccess->newfileaccess(false);
-    const bool opened = fileAccess->fopen(&rootPath, true, false);
 
-    rootPath.resize(size);
-
-    FilterChain filters;
-
-    if (opened)
+    // try and open ignore file.
+    if (fileAccess->fopen(&filePath, true, false))
     {
+        FilterChain filters;
+
+        // try and load filters.
         if (filters.load(*fileAccess))
         {
-            LOG_verbose << "Filters loaded successfully.";
+            // replace existing filters.
             mFilters = std::move(filters);
-        }
-        else
-        {
-            LOG_verbose << "Error loading filters.";
+
+            return true;
         }
     }
-    else
-    {
-        LOG_debug << "Unable to open filter file.";
-    }
+
+    return false;
 }
 
 void LocalNode::loadFilters()
@@ -2359,20 +2380,20 @@ void LocalNode::loadFilters()
     {
         if (mIgnored || mParentHasPendingFilterOps)
         {
-            mPendingFilterOp = &LocalNode::doLoadFilters;
+            mPendingFilterOp = &LocalNode::loadFiltersOp;
         }
         else
         {
-            doLoadFilters();
+            loadFiltersOp();
         }
     }
 }
 
-bool LocalNode::performPendingOps()
+int LocalNode::performPendingOps()
 {
     if (mIgnored || mParentHasPendingFilterOps)
     {
-        return false;
+        return 0;
     }
 
     if (mFilterDownloading)
@@ -2380,31 +2401,11 @@ bool LocalNode::performPendingOps()
         mFilterDownloading = isFilterDownloading();
         if (mFilterDownloading)
         {
-            return false;
+            return 0;
         }
     }
 
-    (this->*mPendingFilterOp)();
-
-    return mPendingFilterOp == nullptr;
-}
-
-void LocalNode::doLoadFilters()
-{
-    static const char *messages[2] = {
-        "Loading filters for ",
-        "Performing deferred filter load for "
-    };
-
-    LOG_verbose << messages[mPendingFilterOp != nullptr]
-                << name;
-
-    string path;
-
-    getlocalpath(&path);
-    loadFilters(path);
-
-    mPendingFilterOp = nullptr;
+    return (this->*mPendingFilterOp)() ? 1 : -1;
 }
 
 bool LocalNode::hasIgnoreFile() const
@@ -2430,12 +2431,64 @@ bool LocalNode::isFilterDownloading() const
     return false;
 }
 
+bool LocalNode::loadFiltersOp()
+{
+    static const string messages[2] = {
+        "Loading filters for ",
+        "Performing deferred filter load for "
+    };
+
+    // convenient alias.
+    auto& filterFailures = sync->client->syncfilterfailures;
+
+    // try and load the filters.
+    if (loadFilters(ignoreFilePath()))
+    {
+        // we've completed any pending load.
+        mPendingFilterOp = nullptr;
+
+        // let the client know the load succeeded.
+        if (mFilterFailureIt != filterFailures.end())
+        {
+            filterFailures.erase(mFilterFailureIt);
+            mFilterFailureIt = filterFailures.end();
+        }
+
+        // we're done.
+        return true;
+    }
+
+    // queue a future attempt.
+    mPendingFilterOp = &LocalNode::loadFiltersOp;
+
+    // let the client know the load failed.
+    if (mFilterFailureIt == filterFailures.end())
+    {
+        mFilterFailureIt =
+          filterFailures.emplace(mFilterFailureIt, this);
+    }
+
+    return false;
+}
+
 void LocalNode::recomputeFilterFlags()
 {
     mIgnored = parent->isExcluded(name);
     mParentHasPendingFilterOps =
         parent->mParentHasPendingFilterOps
         || parent->mPendingFilterOp != nullptr;
+
+    // don't care about ignored ignore files.
+    if (mIgnored)
+    {
+        auto& filterFailures = sync->client->syncfilterfailures;
+
+        if (mFilterFailureIt != filterFailures.end())
+        {
+            filterFailures.erase(mFilterFailureIt);
+            mFilterFailureIt = filterFailures.end();
+        }
+    }
 
     if (mPendingFilterOp)
     {

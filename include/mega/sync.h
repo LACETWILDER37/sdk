@@ -198,6 +198,7 @@ public:
     ~Sync();
 
     static const string IGNORE_FILENAME;
+    static const int IGNORE_FILE_DELAY_DS;
     static const int SCANNING_DELAY_DS;
     static const int EXTRA_SCANNING_DELAY_DS;
     static const int FILE_UPDATE_DELAY_DS;

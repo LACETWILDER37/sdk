@@ -1407,14 +1407,25 @@ MegaSync *MegaApiImpl::getSyncByPath(const char *localPath)
 
 char *MegaApiImpl::getBlockedPath()
 {
-    char *path = NULL;
-    sdkMutex.lock();
+    SdkMutexGuard guard(sdkMutex);
+
     if (client->blockedfile.size())
     {
-        path = MegaApi::strdup(client->blockedfile.c_str());
+        return MegaApi::strdup(client->blockedfile.c_str());
     }
-    sdkMutex.unlock();
-    return path;
+
+    if (client->syncfilterfailures.size())
+    {
+        string localPath =
+          client->syncfilterfailures.front()->ignoreFilePath();
+        string path;
+
+        client->fsaccess->local2path(&localPath, &path);
+
+        return MegaApi::strdup(path.c_str());
+    }
+
+    return nullptr;
 }
 #endif
 
@@ -22091,6 +22102,14 @@ int MegaApiImpl::isWaiting()
     {
         LOG_debug << "SDK waiting for a blocked file: " << client->blockedfile;
         return RETRY_LOCAL_LOCK;
+    }
+
+    if (client->syncfilterfailures.size())
+    {
+        LOG_debug << "SDK waiting for an ignore file: "
+                  << client->syncfilterfailures.front()->ignoreFilePath();
+
+        return RETRY_IGNORE_FILE;
     }
 #endif
 

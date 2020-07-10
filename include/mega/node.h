@@ -389,23 +389,32 @@ struct MEGA_API LocalNode : public File
 
     ~LocalNode();
 
-    // recursively update child filter state.
+    // updates child filter state.
     void applyFilters();
 
-    // unconditionally clears all filters.
+    // clears all filters.
     void clearAllFilters();
 
-    // conditionally clears this node's filters.
+    // clears this node's filters.
     void clearFilters();
 
     // specify whether we should clear our parent's filters when we are deleted.
     void clearParentFilterOnDeletion(const bool clear);
 
+    // detaches this node from its remote.
+    void detachRemote();
+
     // signal that this node's filter is downloading.
     void filterDownloading();
 
+    // returns true if this node has a parent with pending filter ops.
+    bool hasParentWithPendingOps() const;
+
     // returns true if this node has pending filter ops.
     bool hasPendingOps() const;
+
+    // local path of node's ignore file.
+    string ignoreFilePath() const;
 
     // true if this node is pending or syncing.
     bool isBusy() const;
@@ -419,17 +428,20 @@ struct MEGA_API LocalNode : public File
     // true if this node is ignored.
     bool isIgnored() const;
 
-    // unconditionally loads and applies all filters.
+    // loads and applies all filters.
     void loadAllFilters();
 
-    // destructively updates filters.
-    void loadFilters(string& rootPath);
+    // loads filters from filePath.
+    bool loadFilters(string filePath);
 
-    // conditionally loads this node's filters.
+    // loads filters from the ignore file contained by this node.
     void loadFilters();
 
     // performs pending filter operations.
-    bool performPendingOps();
+    // <  0 if the op failed.
+    // <= 0 if the op could not be completed.
+    // >  0 if the op was completed.
+    int performPendingOps();
 
 private:
     // filter flags.
@@ -447,25 +459,29 @@ private:
         // true if some parent of ours has pending filter ops.
         bool mParentHasPendingFilterOps : 1;
     };
-
-    // unconditionally loads this node's filters.
-    void doLoadFilters();
-
+    
     // true if this node contains an ignore file.
     bool hasIgnoreFile() const;
 
     // true if this node's filter is still downloading.
     bool isFilterDownloading() const;
 
+    // loads filters from the ignore file contained by this node.
+    bool loadFiltersOp();
+
     // recomputes mIgnored and mParentHasPendingFilterOps.
     // executes deferred operations if able.
     void recomputeFilterFlags();
 
+    // own position in MegaClient::syncfilterfailures.
+    localnode_list::iterator mFilterFailureIt;
+
+    // filter rules.
     FilterChain mFilters;
 
     // non-null if we tried to clear or load the filters while we were
     // ignored or while our (or our parents) filter was downloading.
-    void (LocalNode::*mPendingFilterOp)();
+    bool (LocalNode::*mPendingFilterOp)();
 };
 
 template <> inline NewNode*& crossref_other_ptr_ref<LocalNode, NewNode>(LocalNode* p) { return p->newnode.ptr; }

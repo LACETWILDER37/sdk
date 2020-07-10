@@ -1266,6 +1266,9 @@ public:
 
     bool syncuprequired;
 
+    // tracks which nodes failed to load their filters.
+    localnode_list syncfilterfailures;
+
     // block local fs updates processing while locked ops are in progress
     bool syncfsopsfailed;
 

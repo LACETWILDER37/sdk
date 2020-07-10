@@ -1051,6 +1051,7 @@ void MegaClient::init()
     syncdebrisminute = 0;
     syncscanfailed = false;
     syncfslockretry = false;
+    syncfilterfailures.clear();
     syncfsopsfailed = false;
     syncdownretry = false;
     syncnagleretry = false;
@@ -12557,7 +12558,7 @@ bool MegaClient::syncdown(LocalNode* l, string* localpath, bool rubbish)
     if (l->hasPendingOps())
     {
         // try and perform the pending ops.
-        if (!l->performPendingOps())
+        if (l->performPendingOps() <= 0)
         {
             // bail if we couldn't perform the operations.
             LOG_verbose << "Skipping syncdown of "
@@ -12605,11 +12606,7 @@ bool MegaClient::syncdown(LocalNode* l, string* localpath, bool rubbish)
                     local.deleted = true;
 
                     // Detach the remote so that it isn't rubbished, too.
-                    local.node = nullptr;
-                    remote.localnode = nullptr;
-
-                    // Update cache.
-                    local.sync->statecacheadd(&local);
+                    local.detachRemote();
                 }
             }
 
@@ -13037,7 +13034,7 @@ bool MegaClient::syncup(LocalNode* l, dstime* nds, size_t& parentPending)
     if (l->hasPendingOps())
     {
         // try and perform the pending ops.
-        if (!l->performPendingOps())
+        if (l->performPendingOps() <= 0)
         {
             // bail if we couldn't perform the operations.
             LOG_verbose << "Skipping syncup of "

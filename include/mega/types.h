@@ -608,7 +608,16 @@ typedef enum { RECOVER_WITH_MASTERKEY = 9, RECOVER_WITHOUT_MASTERKEY = 10, CANCE
 
 typedef enum { EMAIL_REMOVED = 0, EMAIL_PENDING_REMOVED = 1, EMAIL_PENDING_ADDED = 2, EMAIL_FULLY_ACCEPTED = 3 } emailstatus_t;
 
-typedef enum { RETRY_NONE = 0, RETRY_CONNECTIVITY = 1, RETRY_SERVERS_BUSY = 2, RETRY_API_LOCK = 3, RETRY_RATE_LIMIT = 4, RETRY_LOCAL_LOCK = 5, RETRY_UNKNOWN = 6} retryreason_t;
+typedef enum {
+    RETRY_NONE = 0,
+    RETRY_CONNECTIVITY = 1,
+    RETRY_SERVERS_BUSY = 2,
+    RETRY_API_LOCK = 3,
+    RETRY_RATE_LIMIT = 4,
+    RETRY_LOCAL_LOCK = 5,
+    RETRY_IGNORE_FILE = 6,
+    RETRY_UNKNOWN = 7
+} retryreason_t;
 
 typedef enum {
     STORAGE_UNKNOWN = -9,
@@ -618,7 +627,6 @@ typedef enum {
     STORAGE_CHANGE = 3,     // the status of the storage might have changed
     STORAGE_PAYWALL = 4,    // storage is full and user didn't remedy despite of warnings
 } storagestatus_t;
-
 
 enum SmsVerificationState {
     // These values (except unknown) are delivered from the servers
